@@ -6,6 +6,10 @@ from datasets import load_dataset
 import random
 import numpy as np
 
+from hqq_utils import AutoHQQHFModel, get_size_of_model
+from hqq.utils.patching import prepare_for_inference, recommended_inductor_config_setter
+from quant_cfg import get_quant_config_slm
+
 #####################################################################
 # === SPEC NOTICE ===
 # Only "load model" and "generate" function selection can be modified.
@@ -20,14 +24,9 @@ def generate(model, input_ids, past_key_values, max_new_tokens):
     input_ids = input_ids.clone()
     with torch.no_grad():
         # Prefill
-        outputs = model.prefill_forward(
-            input_ids,
-            past_key_values=past_key_values,
-            position_ids=None,
-            attention_mask=None,
-            cache_position=None,
-            logits_to_keep=1
-        )
+        assert input_ids.device.type == 'cuda'
+
+        outputs = model.prefill_forward(input_ids, past_key_values=past_key_values, position_ids=None, attention_mask=None, cache_position=None, logits_to_keep=1)
         past_key_values = outputs.past_key_values
         next_token = torch.argmax(outputs.logits, dim=-1)
         input_ids = torch.cat([input_ids, next_token], dim=-1)
@@ -81,6 +80,7 @@ def main():
     ############## Set Up ##############
     torch.manual_seed(0)
     random.seed(0)
+    recommended_inductor_config_setter()
     
     max_new_tokens = 256    # Number of new tokens to generate
     device = 'cuda:0'
@@ -97,42 +97,49 @@ def main():
     model.eval() 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     
+    model.prefill_forward = model.forward
+    model.forward = torch.compile(model.forward, mode='max-autotune', dynamic=False, fullgraph=True)
+    
     # === (Optional) Uncomment the following lines if using the custom generate() function. ===
-    # model.prefill_forward = model.forward
+    quant_config = get_quant_config_slm(model)
+    AutoHQQHFModel.quantize_model(model, quant_config=quant_config, compute_dtype=torch.float16, device=device)
+    backend='gemlite'
+    prepare_for_inference(model, backend=backend) 
+    torch.cuda.empty_cache()
 
 
     warmup_prompt = "Explain what AI is."
-    inputs = tokenizer(warmup_prompt, return_tensors="pt").to(device)
-    input_ids = inputs["input_ids"]
+    inputs = tokenizer(warmup_prompt, return_tensors="pt")
+    input_ids = inputs.input_ids.to(device)
     attention_mask = inputs["attention_mask"]
     
     # === (Optional) Set up StaticCache for manual KV cache management ===
-    # from transformers import StaticCache
-    # past_key_values = StaticCache(
-    #     config=model.config, 
-    #     max_batch_size=1, 
-    #     max_cache_len=max_new_tokens + 16, 
-    #     device=model.device, 
-    #     dtype=torch.float16
-    # )
+    from transformers import StaticCache
+    past_key_values = StaticCache(
+        config=model.config, 
+        max_batch_size=1, 
+        max_cache_len=max_new_tokens + 16, 
+        device=model.device, 
+        dtype=torch.float16
+    )
     ####################################################################
     
     for i in tqdm(range(5), desc="Warm Up..."):
         #  === Default: use model.generate() for end-to-end warm-up === 
-        _ = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        # _ = model.generate(
+        #     input_ids=input_ids,
+        #     attention_mask=attention_mask,
+        #     max_new_tokens=max_new_tokens,
+        #     pad_token_id=tokenizer.eos_token_id,
+        # )
         
         # === (Optional) Use custom generate() if uncommented ===
-        # generated = generate(model, input_ids, past_key_values, max_new_tokens)
-        # past_key_values.reset()
+        generated = generate(model, input_ids, past_key_values, max_new_tokens)
+        past_key_values.reset()
         
     prompt = "How to learn a new language?"
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    input_ids = inputs["input_ids"]
+    input_ids = inputs["input_ids"].to(device)
     attention_mask = inputs["attention_mask"]
     tputs = []
     time_record = []
@@ -143,16 +150,16 @@ def main():
         start.record()
 
         # === Default: Use model.generate() for end-to-end timing === 
-        generated = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=tokenizer.eos_token_id,
-        )
+        # generated = model.generate(
+        #     input_ids=input_ids,
+        #     attention_mask=attention_mask,
+        #     max_new_tokens=max_new_tokens,
+        #     pad_token_id=tokenizer.eos_token_id,
+        # )
         
         # === Optional: Use custom generate() if uncommented ===
-        # generated = generate(model, input_ids, past_key_values, max_new_tokens)
-        # past_key_values.reset()
+        generated = generate(model, input_ids, past_key_values, max_new_tokens)
+        past_key_values.reset()
 
         end.record()
         torch.cuda.synchronize()
