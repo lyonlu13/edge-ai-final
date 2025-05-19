@@ -5,7 +5,9 @@ from tqdm.auto import tqdm
 from datasets import load_dataset
 import random
 import numpy as np
-from hqq_utils import AutoHQQHFModel, get_size_of_model
+from peft import PeftModel
+
+from hqq_utils import AutoHQQHFModel
 from hqq.utils.patching import prepare_for_inference, recommended_inductor_config_setter
 from quant_cfg import get_quant_config_slm
 
@@ -91,6 +93,16 @@ def main():
         torch_dtype=torch.float16,
         device_map=device,
     )
+
+    quant_config = get_quant_config_slm(model)
+    AutoHQQHFModel.quantize_model(model, quant_config=quant_config, compute_dtype=torch.float16, device=device)
+
+    fine_tuned_model = "./peft_model" 
+
+
+
+    model = PeftModel.from_pretrained(model, fine_tuned_model).merge_and_unload()
+
     #####################################
     
     model.eval() 
@@ -98,10 +110,6 @@ def main():
     
     model.prefill_forward = model.forward
     model.forward = torch.compile(model.forward, mode='max-autotune', dynamic=False, fullgraph=True)
-    
-    # === (Optional) Uncomment the following lines if using the custom generate() function. ===
-    quant_config = get_quant_config_slm(model)
-    AutoHQQHFModel.quantize_model(model, quant_config=quant_config, compute_dtype=torch.float16, device=device)
 
     backend='gemlite'
     prepare_for_inference(model, backend=backend) 
