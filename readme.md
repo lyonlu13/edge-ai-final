@@ -10,10 +10,6 @@
     - PPL: 11.46
     - throughput: 58.9
     - 下一步: 可以再砍的用力一點，然後用PEFT提升精準度
-<<<<<<< Updated upstream
-2. HQQ砍用力一點，用PEF降低PPL
-    - 
-=======
 2. HQQ砍用力一點，用PEFT降低PPL
     - PPL: 10.52
     - throughput: 62.2
@@ -23,4 +19,3 @@
         - 調整 quant_cfg 量化參數
         - 調整 peft_train 的 lora 跟訓練參數
         - 跑 python peft_train.py && python peft_test.py 訓練之後看結果
->>>>>>> Stashed changes
