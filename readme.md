@@ -2,7 +2,7 @@
 ## 可嘗試的方案
 - [x] HQQ 加速/減少精準度
 - [ ] other generating implement 加速
-- [ ] PEFT 提升精準度
+- [x] PEFT 提升精準度
 - [ ] (?)ONNX/TensorRT 加速
 
 ## 目前嘗試過的方案
