@@ -1,4 +1,6 @@
 __pycache__/*.pyc
+.venv
+quant_log
 checkpoint*
 peft_model
 runs
