@@ -43,7 +43,7 @@ model = prepare_model_for_kbit_training(model)
 
 # lora參數
 peft_config = LoraConfig(
-    r=8,
+    r=16,
     lora_alpha=8,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
     # target_modules=["k_proj", "o_proj", "up_proj", "down_proj"],

@@ -25,7 +25,7 @@ def get_quant_config_slm(model):
     
     n_layers = model.config.num_hidden_layers
     q2_config = BaseQuantizeConfig(nbits=2, group_size=32)  
-    q4_config = BaseQuantizeConfig(nbits=4, group_size=64)  
+    q4_config = BaseQuantizeConfig(nbits=4, group_size=512)  
     q8_config = BaseQuantizeConfig(nbits=8, group_size=64)  
     
     for i in range(n_layers):
