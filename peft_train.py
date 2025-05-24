@@ -17,6 +17,8 @@ from trl import SFTTrainer, SFTConfig
 
 # === Argument Parser ===
 parser = argparse.ArgumentParser(description="Train HQQ + LoRA with FlashAttention")
+parser.add_argument("--nbit", type=int, default=4, help="Quantization bit-width (e.g. 4, 8)")
+parser.add_argument("--group_size", type=int, default=64, help="Group size for quantization")
 parser.add_argument("--device", type=str, default="cuda:0", help="CUDA device to use (default: cuda:0)")
 args = parser.parse_args()
 
@@ -33,7 +35,7 @@ model_name = "meta-llama/Llama-3.2-3B-Instruct"
 # === Load Model with FlashAttention 2 ===
 model = AutoModelForCausalLM.from_pretrained(
     model_name,
-    torch_dtype=torch.float16,
+    torch_dtype=torch.bfloat16,
     device_map=device
     # attn_implementation="flash_attention_2"
 )
@@ -42,9 +44,9 @@ model = AutoModelForCausalLM.from_pretrained(
 # === HQQ Quantization ===
 print("Start quantization...")
 print("Model size before quantization:", get_size_of_model(model) / 1e6, "MB")
-quant_config = get_quant_config_slm(model)
+quant_config = get_quant_config_slm(model, nbits=args.nbit, group_size=args.group_size)
 AutoHQQHFModel.quantize_model(
-    model, quant_config=quant_config, compute_dtype=torch.float16, device=device
+    model, quant_config=quant_config, compute_dtype=torch.bfloat16, device=device
 )
 print("Model size after quantization:", get_size_of_model(model) / 1e6, "MB")
 
