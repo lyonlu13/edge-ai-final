@@ -49,6 +49,7 @@ AutoHQQHFModel.quantize_model(
     model, quant_config=quant_config, compute_dtype=torch.bfloat16, device=device
 )
 print("Model size after quantization:", get_size_of_model(model) / 1e6, "MB")
+model.to(device)
 
 
 # === Prepare for LoRA Training ===
@@ -74,6 +75,7 @@ print("Loading dataset...")
 train_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
 eval_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="validation")
 tokenizer = AutoTokenizer.from_pretrained(model_name)
+model.to(device)
 
 
 # === Training Configuration ===
