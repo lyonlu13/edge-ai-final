@@ -60,10 +60,10 @@ def evaluate_ppl(model, tokenizer, device):
     for i in tqdm(range(nsamples), desc="Evaluating..."):
         batch = test_enc[:, (i * model.seqlen):((i + 1) * model.seqlen)]
 
-        # with torch.no_grad():
-        #     lm_logits = model(batch).logits
         with torch.no_grad():
-            lm_logits = model.prefill_forward(batch).logits
+            lm_logits = model(batch).logits
+        # with torch.no_grad():
+        #     lm_logits = model.prefill_forward(batch).logits
 
         shift_logits = lm_logits[:, :-1, :].contiguous().float()
         shift_labels = test_enc[:, (i * model.seqlen):((i + 1) * model.seqlen)][:, 1:]
