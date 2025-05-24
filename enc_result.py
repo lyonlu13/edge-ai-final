@@ -190,7 +190,11 @@ def main():
 
     # Save results to CSV
     import csv
-    with open("result.csv", mode="w", newline="") as file:
+    os.makedirs("quant_log", exist_ok=True)
+    filename = f"{nbits}_{group_size}_result.csv"
+    filepath = os.path.join("quant_log", filename)
+
+    with open(filepath, mode="w", newline="") as file:
         writer = csv.writer(file)
         writer.writerow(["Id", "value"])
         writer.writerow([0, round(ppl, 2)])
