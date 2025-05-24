@@ -27,8 +27,8 @@ for nbits in nbits_list:
         result = subprocess.run(
             ["python", "enc_result.py", "--nbits", str(nbits), "--group_size", str(group_size), "--device", args.device],
             capture_output=True,
-            text=True,
-            shell=True
+            text=True
+            # shell=True
         )
 
         with open(log_path, "w") as f:
