@@ -132,7 +132,7 @@ def main():
         dtype=torch.float16
     )
     ####################################################################
-    for _ in tqdm(range(5), desc="Warm Up..."):
+    for i in tqdm(range(5), desc="Warm Up..."):
         #  === Default: use model.generate() for end-to-end warm-up === 
         # _ = model.generate(
         #     input_ids=input_ids,
@@ -142,7 +142,7 @@ def main():
         # )
         
         # === (Optional) Use custom generate() if uncommented ===
-        _ = generate(model, input_ids, past_key_values, max_new_tokens)
+        generated = generate(model, input_ids, past_key_values, max_new_tokens)
         past_key_values.reset()
 
     prompt = "How to learn a new language?"
