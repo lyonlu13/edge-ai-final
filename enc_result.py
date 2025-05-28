@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -120,7 +121,7 @@ def main():
     warmup_prompt = "Explain what AI is."
     inputs = tokenizer(warmup_prompt, return_tensors="pt")
     input_ids = inputs.input_ids.to(device)
-    attention_mask = inputs["attention_mask"].to(device)
+    # attention_mask = inputs["attention_mask"].to(device)
 
     # === (Optional) Set up StaticCache for manual KV cache management ===
     from transformers import StaticCache
@@ -148,7 +149,7 @@ def main():
     prompt = "How to learn a new language?"
     inputs = tokenizer(prompt, return_tensors="pt")
     input_ids = inputs["input_ids"].to(device)
-    attention_mask = inputs["attention_mask"].to(device)
+    # attention_mask = inputs["attention_mask"].to(device)
 
     tputs = []
     time_record = []
