@@ -27,15 +27,14 @@ mkdir -p ~/miniconda3
 
 wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
 
-bash ~/miniconda3/miniconda.sh -b -u -p ~miniconda3
+bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
 
 rm ~/miniconda3/miniconda.sh
 
 source ~/miniconda3/bin/activate
 conda init --all
 
-conda create --name edge--no-default-packages python=3.1111=he870216_0
-
+conda create --name edge --no-default-packages python=3.11.11=he870216_0
 conda activate edge
 pip install torch torchvision torchaudio
 conda env update -f environment.yml
