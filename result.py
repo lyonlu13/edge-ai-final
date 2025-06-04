@@ -1,104 +1,204 @@
-# ref:
-#   https://medium.com/@dataoilst.info/breakdown-of-hugging-face-peft-776539e45231
-#   https://github.com/mobiusml/hqq/blob/master/examples/hqq_plus.py
-#   https://github.com/unslothai/unsloth/issues/1264
-#   https://stackoverflow.com/questions/79546910/typeerror-in-sfttrainer-initialization-unexpected-keyword-argument-tokenizer
-
 import torch
+import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from tqdm.auto import tqdm
 from datasets import load_dataset
 import random
-from hqq_utils import AutoHQQHFModel, get_size_of_model
-from hqq.utils.patching import recommended_inductor_config_setter
+import numpy as np
+from peft import PeftModel
+
+from hqq_utils import AutoHQQHFModel
+from hqq.utils.patching import prepare_for_inference, recommended_inductor_config_setter
 from quant_cfg import get_quant_config_slm
-from peft import get_peft_model, LoraConfig
-from peft import prepare_model_for_kbit_training
-from trl import SFTTrainer, SFTConfig
 
-torch.manual_seed(0)
-random.seed(0)
-recommended_inductor_config_setter()
+#####################################################################
+# === SPEC NOTICE ===
+# Only "load model" and "generate" function selection can be modified.
+# DO NOT change PPL calculation, timing, or throughput logic.
+#####################################################################
 
-max_new_tokens = 256
-device = "cuda:0"
+# === (Optional) Define your own custom generate function. ===
+# This is useful if you want full control over KV cache and generation steps.
+# You can modify this function to suit your needs.
+# By default, we use model.generate() for simplicity and general use.
+def generate(model, input_ids, past_key_values, max_new_tokens):
+    input_ids = input_ids.clone()
+    with torch.no_grad():
+        # Prefill
+        assert input_ids.device.type == 'cuda'
 
-model_name = "meta-llama/Llama-3.2-3B-Instruct"
-model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.float16,
-    device_map=device,
-)
+        outputs = model.prefill_forward(input_ids, past_key_values=past_key_values, position_ids=None, attention_mask=None, cache_position=None, logits_to_keep=1)
+        past_key_values = outputs.past_key_values
+        next_token = torch.argmax(outputs.logits, dim=-1)
+        input_ids = torch.cat([input_ids, next_token], dim=-1)
 
-print("Start quantization...")
-print("Model size before quantization:", get_size_of_model(model) / 1e6, "MB")
-quant_config = get_quant_config_slm(model)
-AutoHQQHFModel.quantize_model(
-    model, quant_config=quant_config, compute_dtype=torch.float16, device=device
-)
-print("Model size after quantization:", get_size_of_model(model) / 1e6, "MB")
+        # Token-by-token Decoding
+        for _ in range(max_new_tokens):
+            pos = input_ids.shape[1]
+            cache_position = torch.arange(pos, pos + 1, device=input_ids.device, dtype=torch.long)
 
-print("Start LoRA...")
-model = prepare_model_for_kbit_training(model)
+            outputs = model(
+                next_token,
+                past_key_values=past_key_values,
+                position_ids=cache_position.unsqueeze(0),
+                cache_position=cache_position
+            )
+            logits = outputs.logits
+            next_token = torch.argmax(logits, dim=-1)
+            input_ids = torch.cat([input_ids, next_token], dim=-1)
+            past_key_values = outputs.past_key_values
+
+    return input_ids
+
+def evaluate_ppl(model, tokenizer, device="cuda:0"):
+    test_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+    
+    test_enc = tokenizer("\n\n".join(test_dataset["text"]), return_tensors="pt")
+    model.seqlen = 2048
+    test_enc = test_enc.input_ids.to(device)
+    
+    nsamples = test_enc.numel() // model.seqlen
+    nlls = []  
+    for i in tqdm(range(nsamples), desc="Evaluating..."):
+        batch = test_enc[:, (i * model.seqlen):((i + 1) * model.seqlen)]
+        
+        with torch.no_grad():
+            lm_logits = model(batch).logits
+
+        shift_logits = lm_logits[:, :-1, :].contiguous().float()
+        shift_labels = test_enc[:, (i * model.seqlen):((i + 1) * model.seqlen)][:, 1:]
+
+        loss_fct = nn.CrossEntropyLoss()
+        loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
+        neg_log_likelihood = loss.float() * model.seqlen
+        nlls.append(neg_log_likelihood)
+
+    ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * model.seqlen))
+    
+    return ppl.item()
+
+def main():
+    ############## Set Up ##############
+    torch.manual_seed(0)
+    random.seed(0)
+    recommended_inductor_config_setter()
+    
+    max_new_tokens = 256    # Number of new tokens to generate
+    device = 'cuda:0'
+    with torch.cuda.device(device):
+        ### === TODO: Load your model (you may change this part) ===
+        model_name = "meta-llama/Llama-3.2-3B-Instruct"   
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map=device,
+        )
+
+        quant_config = get_quant_config_slm(model)
+        AutoHQQHFModel.quantize_model(model, quant_config=quant_config, compute_dtype=torch.float16, device=device)
+
+        fine_tuned_model = "./peft_model" 
 
 
-# lora參數
-peft_config = LoraConfig(
-    r=16,
-    lora_alpha=8,
-    target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-    # target_modules=["k_proj", "o_proj", "up_proj", "down_proj"],
-    lora_dropout=0.05,
-    bias="none",
-    task_type="CAUSAL_LM",
-)
-model = get_peft_model(model, peft_config)
-model.print_trainable_parameters()
+
+        model = PeftModel.from_pretrained(model, fine_tuned_model).merge_and_unload()
+
+        #####################################
+        
+        model.eval() 
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        
+        model.prefill_forward = model.forward
+        model.forward = torch.compile(model.forward, mode='max-autotune', dynamic=False, fullgraph=True)
+
+        backend='gemlite'
+        prepare_for_inference(model, backend=backend) 
+        torch.cuda.empty_cache()
 
 
-print("Loading dataset...")
-train_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
-eval_dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split="validation")
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+        warmup_prompt = "Explain what AI is."
+        inputs = tokenizer(warmup_prompt, return_tensors="pt")
+        input_ids = inputs.input_ids.to(device)
+        attention_mask = inputs["attention_mask"]
+        
+        # === (Optional) Set up StaticCache for manual KV cache management ===
+        from transformers import StaticCache
+        past_key_values = StaticCache(
+            config=model.config, 
+            max_batch_size=1, 
+            max_cache_len=max_new_tokens + 16, 
+            device=model.device, 
+            dtype=torch.float16
+        )
+        ####################################################################
+        
+        for i in tqdm(range(5), desc="Warm Up..."):
+            #  === Default: use model.generate() for end-to-end warm-up === 
+            # _ = model.generate(
+            #     input_ids=input_ids,
+            #     attention_mask=attention_mask,
+            #     max_new_tokens=max_new_tokens,
+            #     pad_token_id=tokenizer.eos_token_id,
+            # )
+            
+            # === (Optional) Use custom generate() if uncommented ===
+            generated = generate(model, input_ids, past_key_values, max_new_tokens)
+            past_key_values.reset()
+            
+        prompt = "How to learn a new language?"
+        inputs = tokenizer(prompt, return_tensors="pt").to(device)
+        input_ids = inputs["input_ids"].to(device)
+        attention_mask = inputs["attention_mask"]
+        tputs = []
+        time_record = []
+        for _ in tqdm(range(10), desc="Test Inference"):
+            torch.cuda.synchronize()
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
 
-print("Start training...")
-# 訓練參數
-grad_acc = 1
-logging_st = 1
-max_steps = -1
-lr = 1e-5
-batch_size = 1
-n_epochs = 4
-max_tokens = 1024
-training_arguments = SFTConfig(
-    output_dir=".",
-    per_device_train_batch_size=batch_size,
-    gradient_accumulation_steps=grad_acc,
-    learning_rate=lr,
-    logging_steps=logging_st,
-    num_train_epochs=n_epochs,
-    max_steps=max_steps,
-    remove_unused_columns=False,
-    bf16=True,
-    max_grad_norm=1.0,
-    save_steps=500,
-    lr_scheduler_type="cosine",
-    packing=True,  # allows multiple shorter sequences to be packed into a single training example, maximizing the use of the model's context window
-    max_seq_length=max_tokens,  # it determines the maximum length of input sequences during fine-tuning
-    dataset_text_field="text",  # pointing to the 'text' column in the dataset
-)
+            # === Default: Use model.generate() for end-to-end timing === 
+            # generated = model.generate(
+            #     input_ids=input_ids,
+            #     attention_mask=attention_mask,
+            #     max_new_tokens=max_new_tokens,
+            #     pad_token_id=tokenizer.eos_token_id,
+            # )
+            
+            # === Optional: Use custom generate() if uncommented ===
+            generated = generate(model, input_ids, past_key_values, max_new_tokens)
+            past_key_values.reset()
 
-trainer = SFTTrainer(
-    model=model,  # model to train
-    train_dataset=train_dataset,  # the training dataset
-    eval_dataset=eval_dataset,  # the evaluation dataset
-    peft_config=peft_config,  # from LoRA Configuration
-    processing_class=tokenizer,  # model tokenizer
-    args=training_arguments,  # the training parameters
-)
+            end.record()
+            torch.cuda.synchronize()
+            elapsed_ms = start.elapsed_time(end)
+            tput = generated[0][input_ids.shape[1]:].shape[0]/(elapsed_ms / 1000)
+            time_record.append(elapsed_ms / 1000)
+            tputs.append(tput)
+            
+        response = tokenizer.decode(generated[0][input_ids.shape[1]:], skip_special_tokens=True)
+        sorted_tputs = np.sort(tputs)[2:-2]
+        org_tput = np.mean(sorted_tputs)
+        print(f'Prompt: {prompt}\nResponse: {response}\n')
+        
+        print(f'Time Record: {time_record}')
+        print(f'Throughput Record: {tputs} toks/s\n')
 
-model.train()
-trainer.train()
+        ### Your final throughput result ###
+        print(f'Throughput: {org_tput} toks/s')
+        ppl = evaluate_ppl(model, tokenizer, device)
+        print(f"Perplexity (PPL): {ppl}")
+        
+        # Save results to CSV
+        import csv
+        rounded_tput = round(org_tput, 1)
+        ppl = round(ppl, 2)
 
-new_model = "peft_model"
-print("Saving model...")
-trainer.model.save_pretrained(new_model)
+        with open("result.csv", mode="w", newline="") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Id", "value"])
+            writer.writerow([0, ppl])
+            writer.writerow([1, rounded_tput])
+        
+if __name__ == '__main__':
+    main()
